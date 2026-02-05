@@ -15,16 +15,39 @@ use crate::job::{
     ScheduledJobStatus,
 };
 use crate::matcher::{Matcher, ResourceMatcher};
+use crate::pbs::{PbsAdapter, PbsConfig, PbsState};
 use crate::persistence::StateStore;
 use crate::queue::PriorityQueue;
 use crate::slurm::{SlurmAdapter, SlurmConfig, SlurmState};
 use crate::workflow::{Workflow, WorkflowBuilder, WorkflowId, WorkflowStatus};
 
+/// The type of HPC batch scheduler to use.
+#[derive(Debug, Clone, Default)]
+pub enum BatchSchedulerType {
+    /// SLURM (Simple Linux Utility for Resource Management).
+    #[default]
+    Slurm,
+    /// PBS (Portable Batch System) / Torque / PBS Pro.
+    Pbs,
+}
+
+/// Enum to hold either SLURM or PBS adapter.
+enum BatchAdapter {
+    Slurm(SlurmAdapter),
+    Pbs(PbsAdapter),
+}
+
 /// Configuration for the HPC scheduler.
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
-    /// SLURM configuration.
+    /// Type of batch scheduler to use.
+    pub scheduler_type: BatchSchedulerType,
+
+    /// SLURM configuration (used when scheduler_type is Slurm).
     pub slurm: SlurmConfig,
+
+    /// PBS configuration (used when scheduler_type is Pbs).
+    pub pbs: PbsConfig,
 
     /// Status polling interval in seconds.
     pub poll_interval_secs: u64,
@@ -42,11 +65,33 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
+            scheduler_type: BatchSchedulerType::default(),
             slurm: SlurmConfig::default(),
+            pbs: PbsConfig::default(),
             poll_interval_secs: 30,
             max_wait_time_secs: 86400, // 24 hours
             auto_match_resources: true,
             state_dir: PathBuf::from("/tmp/hiq-scheduler"),
+        }
+    }
+}
+
+impl SchedulerConfig {
+    /// Create a configuration for SLURM.
+    pub fn with_slurm(slurm: SlurmConfig) -> Self {
+        Self {
+            scheduler_type: BatchSchedulerType::Slurm,
+            slurm,
+            ..Default::default()
+        }
+    }
+
+    /// Create a configuration for PBS.
+    pub fn with_pbs(pbs: PbsConfig) -> Self {
+        Self {
+            scheduler_type: BatchSchedulerType::Pbs,
+            pbs,
+            ..Default::default()
         }
     }
 }
@@ -95,10 +140,10 @@ pub trait Scheduler: Send + Sync {
     async fn wait_workflow(&self, workflow_id: &WorkflowId) -> SchedResult<()>;
 }
 
-/// HPC Scheduler with SLURM integration.
+/// HPC Scheduler with SLURM and PBS integration.
 pub struct HpcScheduler {
     config: SchedulerConfig,
-    slurm: SlurmAdapter,
+    adapter: BatchAdapter,
     matcher: ResourceMatcher,
     store: Arc<dyn StateStore>,
     queue: RwLock<PriorityQueue>,
@@ -113,12 +158,19 @@ impl HpcScheduler {
         backends: Vec<Arc<dyn Backend>>,
         store: Arc<dyn StateStore>,
     ) -> SchedResult<Self> {
-        let slurm = SlurmAdapter::new(config.slurm.clone()).await?;
+        let adapter = match config.scheduler_type {
+            BatchSchedulerType::Slurm => {
+                BatchAdapter::Slurm(SlurmAdapter::new(config.slurm.clone()).await?)
+            }
+            BatchSchedulerType::Pbs => {
+                BatchAdapter::Pbs(PbsAdapter::new(config.pbs.clone()).await?)
+            }
+        };
         let matcher = ResourceMatcher::new(backends);
 
         Ok(Self {
             config,
-            slurm,
+            adapter,
             matcher,
             store,
             queue: RwLock::new(PriorityQueue::new()),
@@ -133,12 +185,32 @@ impl HpcScheduler {
         backends: Vec<Arc<dyn Backend>>,
         store: Arc<dyn StateStore>,
     ) -> Self {
-        let slurm = SlurmAdapter::mock(config.slurm.clone());
+        let adapter = BatchAdapter::Slurm(SlurmAdapter::mock(config.slurm.clone()));
         let matcher = ResourceMatcher::new(backends);
 
         Self {
             config,
-            slurm,
+            adapter,
+            matcher,
+            store,
+            queue: RwLock::new(PriorityQueue::new()),
+            workflows: RwLock::new(rustc_hash::FxHashMap::default()),
+            completed_jobs: RwLock::new(rustc_hash::FxHashSet::default()),
+        }
+    }
+
+    /// Create a scheduler with a mock PBS adapter (for testing).
+    pub fn with_mock_pbs(
+        config: SchedulerConfig,
+        backends: Vec<Arc<dyn Backend>>,
+        store: Arc<dyn StateStore>,
+    ) -> Self {
+        let adapter = BatchAdapter::Pbs(PbsAdapter::mock(config.pbs.clone()));
+        let matcher = ResourceMatcher::new(backends);
+
+        Self {
+            config,
+            adapter,
             matcher,
             store,
             queue: RwLock::new(PriorityQueue::new()),
@@ -194,16 +266,23 @@ impl HpcScheduler {
                 }
             }
 
-            // Submit to SLURM
-            match self.slurm.submit(&job).await {
-                Ok(slurm_job_id) => {
-                    job.status = ScheduledJobStatus::SlurmQueued { slurm_job_id };
+            // Submit to batch scheduler (SLURM or PBS)
+            let submit_result = match &self.adapter {
+                BatchAdapter::Slurm(slurm) => slurm.submit(&job).await,
+                BatchAdapter::Pbs(pbs) => pbs.submit(&job).await,
+            };
+
+            match submit_result {
+                Ok(batch_job_id) => {
+                    job.status = ScheduledJobStatus::SlurmQueued {
+                        slurm_job_id: batch_job_id,
+                    };
                     job.submitted_at = Some(chrono::Utc::now());
                     self.store.save_job(&job).await?;
-                    tracing::info!("Submitted job {} to SLURM", job.id);
+                    tracing::info!("Submitted job {} to batch scheduler", job.id);
                 }
                 Err(e) => {
-                    tracing::error!("SLURM submission failed for job {}: {}", job.id, e);
+                    tracing::error!("Batch submission failed for job {}: {}", job.id, e);
                     job.status = ScheduledJobStatus::Failed {
                         reason: e.to_string(),
                         slurm_job_id: None,
@@ -219,31 +298,47 @@ impl HpcScheduler {
 
     /// Update statuses of running jobs.
     async fn update_job_statuses(&self) -> SchedResult<()> {
-        let jobs = self
-            .store
-            .list_jobs(&JobFilter::running())
-            .await?;
+        let jobs = self.store.list_jobs(&JobFilter::running()).await?;
 
         for job in jobs {
-            if let Some(slurm_job_id) = job.status.slurm_job_id() {
-                match self.slurm.status(slurm_job_id).await {
-                    Ok(info) => {
-                        let new_status = self.map_slurm_status(&job, &info);
-                        if new_status != job.status {
-                            self.store.update_status(&job.id, new_status.clone()).await?;
-
-                            if new_status.is_terminal() {
-                                let mut completed = self.completed_jobs.write().await;
-                                completed.insert(job.id.clone());
+            if let Some(batch_job_id) = job.status.slurm_job_id() {
+                let new_status = match &self.adapter {
+                    BatchAdapter::Slurm(slurm) => {
+                        match slurm.status(batch_job_id).await {
+                            Ok(info) => Some(self.map_slurm_status(&job, &info)),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to get status for SLURM job {}: {}",
+                                    batch_job_id,
+                                    e
+                                );
+                                None
                             }
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to get status for SLURM job {}: {}",
-                            slurm_job_id,
-                            e
-                        );
+                    BatchAdapter::Pbs(pbs) => {
+                        match pbs.status(batch_job_id).await {
+                            Ok(info) => Some(self.map_pbs_status(&job, &info)),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to get status for PBS job {}: {}",
+                                    batch_job_id,
+                                    e
+                                );
+                                None
+                            }
+                        }
+                    }
+                };
+
+                if let Some(new_status) = new_status {
+                    if new_status != job.status {
+                        self.store.update_status(&job.id, new_status.clone()).await?;
+
+                        if new_status.is_terminal() {
+                            let mut completed = self.completed_jobs.write().await;
+                            completed.insert(job.id.clone());
+                        }
                     }
                 }
             }
@@ -297,6 +392,56 @@ impl HpcScheduler {
             SlurmState::Cancelled | SlurmState::Preempted => ScheduledJobStatus::Cancelled,
             SlurmState::Unknown(state) => {
                 tracing::warn!("Unknown SLURM state: {}", state);
+                job.status.clone()
+            }
+        }
+    }
+
+    /// Map PBS job state to scheduler job status.
+    fn map_pbs_status(
+        &self,
+        job: &ScheduledJob,
+        info: &crate::pbs::PbsJobInfo,
+    ) -> ScheduledJobStatus {
+        let pbs_job_id = info.job_id.clone();
+
+        match &info.state {
+            PbsState::Queued | PbsState::Waiting | PbsState::Held => {
+                ScheduledJobStatus::SlurmQueued {
+                    slurm_job_id: pbs_job_id,
+                }
+            }
+            PbsState::Running | PbsState::Exiting | PbsState::ArrayRunning => {
+                ScheduledJobStatus::SlurmRunning {
+                    slurm_job_id: pbs_job_id,
+                }
+            }
+            PbsState::Completed => {
+                // Check exit status to determine if it was a success
+                if info.exit_status == Some(0) || info.exit_status.is_none() {
+                    ScheduledJobStatus::Completed {
+                        slurm_job_id: pbs_job_id,
+                        quantum_job_id: hiq_hal::JobId("completed".to_string()),
+                    }
+                } else {
+                    ScheduledJobStatus::Failed {
+                        reason: format!("PBS job failed with exit status {:?}", info.exit_status),
+                        slurm_job_id: Some(pbs_job_id),
+                        quantum_job_id: job.status.quantum_job_id().cloned(),
+                    }
+                }
+            }
+            PbsState::Failed => ScheduledJobStatus::Failed {
+                reason: "PBS job failed".to_string(),
+                slurm_job_id: Some(pbs_job_id),
+                quantum_job_id: job.status.quantum_job_id().cloned(),
+            },
+            PbsState::Suspended | PbsState::Transit => {
+                // Keep current status for suspended/transit jobs
+                job.status.clone()
+            }
+            PbsState::Unknown(state) => {
+                tracing::warn!("Unknown PBS state: {}", state);
                 job.status.clone()
             }
         }
@@ -374,15 +519,18 @@ impl Scheduler for HpcScheduler {
             }
         }
 
-        // Check if job is running on SLURM
+        // Check if job is running on batch scheduler
         let job = self
             .store
             .load_job(job_id)
             .await?
             .ok_or_else(|| SchedError::JobNotFound(job_id.to_string()))?;
 
-        if let Some(slurm_job_id) = job.status.slurm_job_id() {
-            self.slurm.cancel(slurm_job_id).await?;
+        if let Some(batch_job_id) = job.status.slurm_job_id() {
+            match &self.adapter {
+                BatchAdapter::Slurm(slurm) => slurm.cancel(batch_job_id).await?,
+                BatchAdapter::Pbs(pbs) => pbs.cancel(batch_job_id).await?,
+            }
         }
 
         self.store
@@ -636,5 +784,48 @@ mod tests {
 
         let status = scheduler.workflow_status(&workflow_id).await.unwrap();
         assert!(matches!(status, WorkflowStatus::Pending));
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_submit_with_pbs() {
+        let config = SchedulerConfig::with_pbs(PbsConfig::default());
+        let backends: Vec<Arc<dyn Backend>> = vec![Arc::new(MockBackend {
+            name: "test_backend".to_string(),
+            num_qubits: 10,
+        })];
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+
+        let scheduler = HpcScheduler::with_mock_pbs(config, backends, store);
+
+        let circuit = CircuitSpec::from_qasm("OPENQASM 3.0; qubit[2] q; h q[0]; cx q[0], q[1];");
+        let job = ScheduledJob::new("pbs_test_job", circuit);
+        let job_id = job.id.clone();
+
+        let submitted_id = scheduler.submit(job).await.unwrap();
+        assert_eq!(submitted_id, job_id);
+
+        let status = scheduler.status(&job_id).await.unwrap();
+        assert!(status.is_pending());
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_config_builders() {
+        let slurm_config = SchedulerConfig::with_slurm(SlurmConfig {
+            partition: "quantum".to_string(),
+            ..Default::default()
+        });
+        assert!(matches!(
+            slurm_config.scheduler_type,
+            BatchSchedulerType::Slurm
+        ));
+
+        let pbs_config = SchedulerConfig::with_pbs(PbsConfig {
+            queue: "quantum".to_string(),
+            ..Default::default()
+        });
+        assert!(matches!(
+            pbs_config.scheduler_type,
+            BatchSchedulerType::Pbs
+        ));
     }
 }

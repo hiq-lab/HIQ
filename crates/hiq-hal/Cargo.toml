@@ -20,6 +20,7 @@ reqwest = { workspace = true }
 rustc-hash = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

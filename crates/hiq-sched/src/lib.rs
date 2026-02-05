@@ -42,6 +42,7 @@ pub mod scheduler;
 pub mod workflow;
 pub mod matcher;
 pub mod slurm;
+pub mod pbs;
 pub mod persistence;
 
 // Re-exports
@@ -51,8 +52,9 @@ pub use job::{
     TopologyPreference,
 };
 pub use queue::PriorityQueue;
-pub use scheduler::{HpcScheduler, Scheduler, SchedulerConfig};
+pub use scheduler::{BatchSchedulerType, HpcScheduler, Scheduler, SchedulerConfig};
 pub use workflow::{Workflow, WorkflowBuilder, WorkflowId, WorkflowStatus};
 pub use matcher::{MatchResult, ResourceMatcher};
 pub use slurm::{SlurmAdapter, SlurmConfig};
+pub use pbs::{PbsAdapter, PbsConfig};
 pub use persistence::{JsonStore, SqliteStore, StateStore};

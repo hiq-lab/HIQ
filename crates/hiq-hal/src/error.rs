@@ -14,6 +14,10 @@ pub enum HalError {
     #[error("Authentication failed: {0}")]
     AuthenticationFailed(String),
 
+    /// Authentication error (OIDC, token, etc.).
+    #[error("Authentication error: {0}")]
+    Auth(String),
+
     /// Job submission failed.
     #[error("Job submission failed: {0}")]
     SubmissionFailed(String),

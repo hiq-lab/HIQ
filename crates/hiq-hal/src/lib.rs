@@ -7,13 +7,16 @@
 //! - Capabilities for describing backend features
 //! - Job management (submission, status, results)
 //! - Result types for execution output
+//! - Authentication (OIDC) for HPC sites
 
+pub mod auth;
 pub mod backend;
 pub mod capability;
 pub mod error;
 pub mod job;
 pub mod result;
 
+pub use auth::{CachedToken, EnvTokenProvider, OidcAuth, OidcConfig, TokenProvider};
 pub use backend::{Backend, BackendConfig, BackendFactory};
 pub use capability::{Capabilities, GateSet, Topology, TopologyKind};
 pub use error::{HalError, HalResult};

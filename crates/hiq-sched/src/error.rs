@@ -40,6 +40,18 @@ pub enum SchedError {
     #[error("SLURM job not found: {0}")]
     SlurmJobNotFound(String),
 
+    /// PBS submission failed.
+    #[error("PBS submission failed: {0}")]
+    PbsSubmitError(String),
+
+    /// PBS command execution failed.
+    #[error("PBS command failed: {command} - {message}")]
+    PbsCommandError { command: String, message: String },
+
+    /// PBS job not found.
+    #[error("PBS job not found: {0}")]
+    PbsJobNotFound(String),
+
     /// No suitable backend found for the job requirements.
     #[error("No matching backend found: {0}")]
     NoMatchingBackend(String),
