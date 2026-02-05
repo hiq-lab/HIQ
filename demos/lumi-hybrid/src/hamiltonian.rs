@@ -142,6 +142,49 @@ impl H2Hamiltonian {
         self.g0 + self.g1 * z0_exp + self.g2 * z1_exp + self.g3 * zz_exp
             + (self.g4 + self.g5) * xx_yy_approx
     }
+
+    /// Compute exact energy for a given UCCSD parameter
+    ///
+    /// This bypasses measurement noise and approximations by directly
+    /// computing the energy expectation value for the parameterized state.
+    ///
+    /// For the UCCSD ansatz with parameter θ, the state is:
+    /// |ψ(θ)⟩ = cos(θ/2)|01⟩ - sin(θ/2)|10⟩
+    ///
+    /// This allows for accurate VQE optimization without shot noise.
+    pub fn exact_energy_for_parameter(&self, theta: f64) -> f64 {
+        // The UCCSD ansatz creates:
+        // |ψ(θ)⟩ = cos(θ/2)|01⟩ + i*sin(θ/2)|10⟩
+        // But after the gate decomposition we have a real state:
+        // |ψ(θ)⟩ = cos(θ/2)|01⟩ - sin(θ/2)|10⟩
+
+        let cos_half = (theta / 2.0).cos();
+        let sin_half = (theta / 2.0).sin();
+
+        // Probabilities
+        let p_00 = 0.0;  // Not in superposition with HF state
+        let p_01 = cos_half * cos_half;
+        let p_10 = sin_half * sin_half;
+        let p_11 = 0.0;
+
+        // Z expectation values
+        // |00⟩: z0=+1, z1=+1
+        // |01⟩: z0=+1, z1=-1
+        // |10⟩: z0=-1, z1=+1
+        // |11⟩: z0=-1, z1=-1
+        let z0_exp = p_00 * 1.0 + p_01 * 1.0 + p_10 * (-1.0) + p_11 * (-1.0);
+        let z1_exp = p_00 * 1.0 + p_01 * (-1.0) + p_10 * 1.0 + p_11 * (-1.0);
+        let zz_exp = p_00 * 1.0 + p_01 * (-1.0) + p_10 * (-1.0) + p_11 * 1.0;
+
+        // XX and YY expectation values for the state cos(θ/2)|01⟩ - sin(θ/2)|10⟩
+        // ⟨XX⟩ = -2 cos(θ/2) sin(θ/2) = -sin(θ)
+        // ⟨YY⟩ = -2 cos(θ/2) sin(θ/2) = -sin(θ)
+        let xx_exp = -theta.sin();
+        let yy_exp = -theta.sin();
+
+        self.g0 + self.g1 * z0_exp + self.g2 * z1_exp + self.g3 * zz_exp
+            + self.g4 * xx_exp + self.g5 * yy_exp
+    }
 }
 
 /// Interpolate Hamiltonian coefficients for a given bond distance

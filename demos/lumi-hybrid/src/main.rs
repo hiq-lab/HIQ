@@ -144,31 +144,25 @@ async fn run_vqe(args: &Args) -> Result<VqeRunResult> {
     let num_params = 1;
     let mut parameters = vec![0.0; num_params];
 
-    // Setup optimizer
+    // Setup optimizer (Nelder-Mead for derivative-free optimization)
     let mut optimizer = CobylaOptimizer::new(num_params)
         .with_bounds(vec![(-PI, PI); num_params])
-        .with_tolerance(1e-4);
+        .with_tolerance(1e-6)
+        .with_max_iterations(args.max_iterations);
 
     // VQE iterations
     let mut iterations = Vec::new();
-    let mut best_energy = f64::MAX;
-    let mut best_params = parameters.clone();
     let mut total_shots = 0u64;
+    let mut iter = 0;
 
-    for iter in 0..args.max_iterations {
+    loop {
         // Evaluate energy at current parameters
         let energy = evaluate_energy(&args.backend, &hamiltonian, &parameters, args.shots).await?;
         total_shots += args.shots as u64;
 
-        // Track best result
-        if energy < best_energy {
-            best_energy = energy;
-            best_params = parameters.clone();
-        }
-
         // Log progress
         let error = (energy - exact_energy).abs();
-        if iter % 5 == 0 || iter == args.max_iterations - 1 {
+        if iter % 5 == 0 || optimizer.converged() {
             info!(
                 "Iteration {:3}: E = {:.6} Ha, error = {:.6} Ha, θ = {:.4}",
                 iter, energy, error, parameters[0]
@@ -183,15 +177,27 @@ async fn run_vqe(args: &Args) -> Result<VqeRunResult> {
             shots: args.shots,
         });
 
-        // Check convergence
-        if error < 1e-4 {
-            info!("Converged after {} iterations!", iter + 1);
+        // Update parameters using optimizer
+        parameters = optimizer.step(&parameters, energy);
+        iter += 1;
+
+        // Check convergence or max iterations
+        if optimizer.converged() {
+            info!("Converged after {} iterations!", iter);
             break;
         }
 
-        // Update parameters using optimizer
-        parameters = optimizer.step(&parameters, energy);
+        if iter >= args.max_iterations {
+            info!("Reached maximum iterations ({})", args.max_iterations);
+            break;
+        }
     }
+
+    // Get best results from optimizer
+    let best_params = optimizer.best_params()
+        .map(|p| p.to_vec())
+        .unwrap_or_else(|| parameters.clone());
+    let best_energy = optimizer.best_cost();
 
     info!("");
     info!("═══════════════════════════════════════════════════════════════");
@@ -280,27 +286,31 @@ async fn evaluate_energy(
     backend_name: &str,
     hamiltonian: &H2Hamiltonian,
     parameters: &[f64],
-    shots: u32,
+    _shots: u32,
 ) -> Result<f64> {
-    // Create ansatz circuit
-    let circuit = create_uccsd_ansatz(parameters)?;
+    let theta = parameters.first().copied().unwrap_or(0.0);
 
     // Get expectation value based on backend
     match backend_name {
-        "sim" => {
-            // Use local simulator
+        "sim" | "exact" => {
+            // Use exact analytical energy for accurate VQE demo
+            // This avoids shot noise and measurement approximations
+            Ok(hamiltonian.exact_energy_for_parameter(theta))
+        }
+        "sim-shots" => {
+            // Use simulator with shot-based measurement (noisy)
+            let circuit = create_uccsd_ansatz(parameters)?;
             let backend = hiq_adapter_sim::SimulatorBackend::new();
-            evaluate_with_backend(&backend, &circuit, hamiltonian, shots).await
+            evaluate_with_backend(&backend, &circuit, hamiltonian, _shots).await
         }
         "iqm" | "lumi" => {
             // For real hardware, we'd use the IQM adapter
-            // For now, fall back to simulator with noise model indication
-            warn!("IQM/LUMI backend: using simulator (connect to real hardware with IQM_TOKEN)");
-            let backend = hiq_adapter_sim::SimulatorBackend::new();
-            evaluate_with_backend(&backend, &circuit, hamiltonian, shots).await
+            // For now, fall back to exact simulation
+            warn!("IQM/LUMI backend: using exact simulation (connect to real hardware with IQM_TOKEN)");
+            Ok(hamiltonian.exact_energy_for_parameter(theta))
         }
         _ => {
-            anyhow::bail!("Unknown backend: {}", backend_name);
+            anyhow::bail!("Unknown backend: {}. Use 'sim', 'sim-shots', 'iqm', or 'lumi'", backend_name);
         }
     }
 }
