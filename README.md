@@ -26,7 +26,7 @@ HIQ is **not** a Qiskit replacement. It's a complementary tool that:
 | Simulator (`hiq-adapter-sim`) | ✅ Complete | Statevector simulation |
 | IQM Adapter (`hiq-adapter-iqm`) | ✅ Complete | Resonance API integration |
 | IBM Adapter (`hiq-adapter-ibm`) | ✅ Complete | Qiskit Runtime API |
-| HPC Scheduler (`hiq-sched`) | ✅ Complete | Slurm integration, workflows, persistence |
+| HPC Scheduler (`hiq-sched`) | ✅ Complete | SLURM & PBS integration, workflows, persistence |
 | Python Bindings (`hiq-python`) | ✅ Complete | PyO3 bindings for circuits & compilation |
 | Demos | ✅ Complete | Grover, VQE, QAOA examples |
 
@@ -48,7 +48,7 @@ HIQ is **not** a Qiskit replacement. It's a complementary tool that:
 │  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌───────────┐         │
 │  │  hiq-ir    │  │ hiq-compile│  │  hiq-hal   │  │ hiq-sched │         │
 │  │            │  │            │  │            │  │           │         │
-│  │ Circuit IR │  │ Pass mgr   │  │ Backend    │  │ Slurm     │         │
+│  │ Circuit IR │  │ Pass mgr   │  │ Backend    │  │ SLURM/PBS │         │
 │  │ QASM3 parse│  │ Optimizer  │  │ abstraction│  │ Workflows │         │
 │  └────────────┘  └────────────┘  └────────────┘  └───────────┘         │
 └──────────────────────────┬──────────────────────────────────────────────┘
@@ -70,7 +70,7 @@ HIQ/
 │   ├── hiq-hal/         # Hardware abstraction layer
 │   ├── hiq-cli/         # Command-line interface
 │   ├── hiq-python/      # Python bindings (PyO3)
-│   └── hiq-sched/       # HPC job scheduler (Slurm, workflows)
+│   └── hiq-sched/       # HPC job scheduler (SLURM, PBS, workflows)
 ├── adapters/
 │   ├── hiq-adapter-sim/ # Local statevector simulator
 │   ├── hiq-adapter-iqm/ # IQM Resonance API adapter
@@ -303,8 +303,8 @@ cargo run --bin demo_qaoa     # Quantum Approximate Optimization
 | Simulator | ✅ | None | Local statevector, up to ~20 qubits |
 | IQM Resonance | ✅ | `IQM_TOKEN` | Cloud API |
 | IBM Quantum | ✅ | `IBM_QUANTUM_TOKEN` | Cloud API (Qiskit Runtime) |
-| IQM LUMI | 🚧 | OIDC | On-premise |
-| IQM LRZ | 🚧 | OIDC | On-premise |
+| IQM LUMI | ✅ | OIDC | On-premise (CSC Finland) |
+| IQM LRZ | ✅ | OIDC | On-premise (Germany) |
 
 ## Compilation Targets
 
@@ -315,6 +315,55 @@ cargo run --bin demo_qaoa     # Quantum Approximate Optimization
 | `ibm`, `ibm5` | RZ, SX, X, CX | Linear (5 qubits) |
 | `ibm27` | RZ, SX, X, CX | Linear (27 qubits) |
 | `simulator` | Universal | Full connectivity |
+
+## HPC Deployment
+
+HIQ provides first-class support for HPC environments with both SLURM and PBS schedulers.
+
+### LUMI (CSC, Finland)
+
+```yaml
+# ~/.hiq/config.yaml
+site: lumi
+scheduler:
+  type: slurm
+  partition: q_fiqci
+  account: project_462000xxx
+
+backend:
+  type: iqm
+  endpoint: https://qpu.lumi.csc.fi
+  auth_method: oidc
+```
+
+```bash
+# Authenticate via OIDC
+hiq auth login --provider csc
+
+# Submit job to LUMI
+hiq run circuit.qasm --backend iqm --shots 1000
+```
+
+### PBS-Based HPC Sites
+
+```yaml
+# ~/.hiq/config.yaml
+scheduler:
+  type: pbs
+  queue: quantum
+  account: your-project
+
+backend:
+  type: iqm
+  endpoint: https://your-qpu.example.com
+```
+
+### Scheduler Support
+
+| Scheduler | Commands | Features |
+|-----------|----------|----------|
+| SLURM | sbatch, squeue, sacct, scancel | QOS mapping, array jobs |
+| PBS/Torque | qsub, qstat, qdel, qhold, qrls | Array jobs, job holds |
 
 ## Testing
 
@@ -348,12 +397,13 @@ cargo test -- --nocapture
 - [x] Python bindings (PyO3)
 
 ### Phase 3: HPC Integration ✅
-- [x] Slurm adapter
+- [x] SLURM adapter
+- [x] PBS adapter (Torque/PBS Pro)
 - [x] Workflow orchestration
 - [x] Job persistence (JSON/SQLite)
 - [x] Demo applications (VQE, QAOA, Grover)
-- [ ] PBS adapter
-- [ ] LUMI deployment testing
+- [x] OIDC authentication for LUMI/LRZ
+- [x] LUMI integration tests
 
 ### Phase 4: Production (Next)
 - [ ] Advanced optimization passes
