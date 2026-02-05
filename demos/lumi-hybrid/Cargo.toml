@@ -1,0 +1,35 @@
+[package]
+name = "lumi-hybrid"
+version = "1.0.0"
+edition = "2021"
+description = "LUMI-Q Quantum-HPC Hybrid Demo: VQE for H2 molecule"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "lumi_vqe"
+path = "src/main.rs"
+
+[[bin]]
+name = "quantum_worker"
+path = "src/quantum_worker.rs"
+
+[dependencies]
+hiq-ir = { path = "../../crates/hiq-ir" }
+hiq-qasm3 = { path = "../../crates/hiq-qasm3" }
+hiq-hal = { path = "../../crates/hiq-hal" }
+hiq-compile = { path = "../../crates/hiq-compile" }
+hiq-sched = { path = "../../crates/hiq-sched" }
+hiq-adapter-sim = { path = "../../adapters/hiq-adapter-sim" }
+hiq-adapter-iqm = { path = "../../adapters/hiq-adapter-iqm" }
+
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+approx = "0.5"
