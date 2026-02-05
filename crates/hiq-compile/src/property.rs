@@ -1,4 +1,74 @@
 //! PropertySet and related types for pass communication.
+//!
+//! This module provides the [`PropertySet`] type, which enables compilation passes
+//! to share data with each other. It contains both standard properties (layout,
+//! coupling map, basis gates) and supports arbitrary custom properties.
+//!
+//! # Overview
+//!
+//! During quantum circuit compilation, multiple passes need to share information:
+//! - **Layout pass** determines which logical qubits map to which physical qubits
+//! - **Routing pass** uses the coupling map to insert SWAP gates
+//! - **Translation pass** uses basis gates to decompose unsupported gates
+//!
+//! The `PropertySet` acts as a shared context passed through all compilation passes.
+//!
+//! # Examples
+//!
+//! ## Basic usage with target configuration
+//!
+//! ```
+//! use hiq_compile::{PropertySet, CouplingMap, BasisGates};
+//!
+//! // Create a property set for an IQM backend
+//! let props = PropertySet::new()
+//!     .with_target(
+//!         CouplingMap::linear(5),  // 5-qubit linear chain
+//!         BasisGates::iqm(),       // PRX + CZ native gates
+//!     );
+//!
+//! assert!(props.coupling_map.is_some());
+//! assert!(props.basis_gates.as_ref().unwrap().contains("prx"));
+//! ```
+//!
+//! ## Using the PassManager with PropertySet
+//!
+//! ```
+//! use hiq_compile::{PassManagerBuilder, CouplingMap, BasisGates};
+//!
+//! let (pass_manager, props) = PassManagerBuilder::new()
+//!     .with_optimization_level(2)
+//!     .with_target(CouplingMap::star(5), BasisGates::ibm())
+//!     .build();
+//!
+//! // The pass manager is now configured with the target properties
+//! assert!(!pass_manager.is_empty());
+//! ```
+//!
+//! ## Custom properties for pass communication
+//!
+//! ```
+//! use hiq_compile::PropertySet;
+//!
+//! // Define a custom property type
+//! #[derive(Debug, Clone, PartialEq)]
+//! struct OptimizationStats {
+//!     gates_removed: usize,
+//!     depth_reduction: usize,
+//! }
+//!
+//! let mut props = PropertySet::new();
+//!
+//! // Insert custom property
+//! props.insert(OptimizationStats {
+//!     gates_removed: 15,
+//!     depth_reduction: 3,
+//! });
+//!
+//! // Retrieve it later
+//! let stats = props.get::<OptimizationStats>().unwrap();
+//! assert_eq!(stats.gates_removed, 15);
+//! ```
 
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -244,18 +314,61 @@ impl BasisGates {
 
 /// Properties shared between compilation passes.
 ///
-/// The PropertySet allows passes to communicate by storing
-/// and retrieving typed values. Standard properties like
-/// layout, coupling map, and basis gates have dedicated fields.
+/// The `PropertySet` allows passes to communicate by storing and retrieving
+/// typed values. Standard properties like layout, coupling map, and basis
+/// gates have dedicated public fields for convenience.
+///
+/// # Standard Properties
+///
+/// | Field | Type | Description |
+/// |-------|------|-------------|
+/// | `layout` | [`Layout`] | Logical-to-physical qubit mapping |
+/// | `coupling_map` | [`CouplingMap`] | Device connectivity graph |
+/// | `basis_gates` | [`BasisGates`] | Native gate set for the target |
+///
+/// # Custom Properties
+///
+/// Passes can store arbitrary data using the type-safe [`insert`](Self::insert)
+/// and [`get`](Self::get) methods. Each type can have at most one value stored.
+///
+/// # Examples
+///
+/// ```
+/// use hiq_compile::{PropertySet, CouplingMap, BasisGates, Layout};
+/// use hiq_ir::QubitId;
+///
+/// let mut props = PropertySet::new();
+///
+/// // Set up target device
+/// props.coupling_map = Some(CouplingMap::linear(5));
+/// props.basis_gates = Some(BasisGates::iqm());
+///
+/// // Layout is typically set by the layout pass
+/// props.layout = Some(Layout::trivial(5));
+///
+/// // Check connectivity
+/// let cm = props.coupling_map.as_ref().unwrap();
+/// assert!(cm.is_connected(0, 1));
+/// assert!(!cm.is_connected(0, 2));
+/// ```
 #[derive(Debug, Default)]
 pub struct PropertySet {
-    /// Qubit layout mapping.
+    /// Qubit layout mapping (logical → physical).
+    ///
+    /// Set by layout passes, used by routing and translation passes.
     pub layout: Option<Layout>,
-    /// Target coupling map.
+
+    /// Target coupling map defining allowed two-qubit interactions.
+    ///
+    /// Should be set before running routing passes.
     pub coupling_map: Option<CouplingMap>,
-    /// Target basis gates.
+
+    /// Target basis gates for gate decomposition.
+    ///
+    /// Should be set before running translation passes.
     pub basis_gates: Option<BasisGates>,
-    /// Custom properties.
+
+    /// Custom properties storage (type-erased).
     custom: FxHashMap<TypeId, Box<dyn Any + Send + Sync>>,
 }
 
@@ -266,6 +379,19 @@ impl PropertySet {
     }
 
     /// Create a property set with target configuration.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use hiq_compile::{PropertySet, CouplingMap, BasisGates};
+    ///
+    /// let props = PropertySet::new()
+    ///     .with_target(CouplingMap::linear(5), BasisGates::ibm());
+    ///
+    /// assert!(props.coupling_map.is_some());
+    /// assert!(props.basis_gates.is_some());
+    /// ```
+    #[must_use]
     pub fn with_target(mut self, coupling_map: CouplingMap, basis_gates: BasisGates) -> Self {
         self.coupling_map = Some(coupling_map);
         self.basis_gates = Some(basis_gates);
@@ -273,6 +399,18 @@ impl PropertySet {
     }
 
     /// Set the layout.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use hiq_compile::{PropertySet, Layout};
+    ///
+    /// let props = PropertySet::new()
+    ///     .with_layout(Layout::trivial(3));
+    ///
+    /// assert!(props.layout.is_some());
+    /// ```
+    #[must_use]
     pub fn with_layout(mut self, layout: Layout) -> Self {
         self.layout = Some(layout);
         self

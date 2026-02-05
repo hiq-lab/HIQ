@@ -10,3 +10,13 @@ Cargo.lock
 .idea/
 *.swp
 *.swo
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.so
+.pytest_cache/
+*.egg-info/
+.pyi

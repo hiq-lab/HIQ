@@ -1,0 +1,640 @@
+//! HPC Scheduler implementation.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use hiq_hal::{Backend, ExecutionResult};
+use tokio::sync::RwLock;
+use tokio::time::interval;
+
+use crate::error::{SchedError, SchedResult};
+use crate::job::{
+    CircuitSpec, JobFilter, Priority, ResourceRequirements, ScheduledJob, ScheduledJobId,
+    ScheduledJobStatus,
+};
+use crate::matcher::{Matcher, ResourceMatcher};
+use crate::persistence::StateStore;
+use crate::queue::PriorityQueue;
+use crate::slurm::{SlurmAdapter, SlurmConfig, SlurmState};
+use crate::workflow::{Workflow, WorkflowBuilder, WorkflowId, WorkflowStatus};
+
+/// Configuration for the HPC scheduler.
+#[derive(Debug, Clone)]
+pub struct SchedulerConfig {
+    /// SLURM configuration.
+    pub slurm: SlurmConfig,
+
+    /// Status polling interval in seconds.
+    pub poll_interval_secs: u64,
+
+    /// Maximum time to wait for a job (seconds).
+    pub max_wait_time_secs: u64,
+
+    /// Whether to automatically match resources on submit.
+    pub auto_match_resources: bool,
+
+    /// Working directory for scheduler state.
+    pub state_dir: PathBuf,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            slurm: SlurmConfig::default(),
+            poll_interval_secs: 30,
+            max_wait_time_secs: 86400, // 24 hours
+            auto_match_resources: true,
+            state_dir: PathBuf::from("/tmp/hiq-scheduler"),
+        }
+    }
+}
+
+/// Trait for scheduler implementations.
+#[async_trait]
+pub trait Scheduler: Send + Sync {
+    /// Submit a job to the scheduler.
+    async fn submit(&self, job: ScheduledJob) -> SchedResult<ScheduledJobId>;
+
+    /// Submit a batch of circuits as a single job.
+    async fn submit_batch(
+        &self,
+        name: &str,
+        circuits: Vec<CircuitSpec>,
+        shots: u32,
+        priority: Priority,
+        requirements: ResourceRequirements,
+    ) -> SchedResult<ScheduledJobId>;
+
+    /// Get the status of a job.
+    async fn status(&self, job_id: &ScheduledJobId) -> SchedResult<ScheduledJobStatus>;
+
+    /// Cancel a job.
+    async fn cancel(&self, job_id: &ScheduledJobId) -> SchedResult<()>;
+
+    /// Wait for a job to complete and return the result.
+    async fn wait(&self, job_id: &ScheduledJobId) -> SchedResult<ExecutionResult>;
+
+    /// Get the result of a completed job.
+    async fn result(&self, job_id: &ScheduledJobId) -> SchedResult<ExecutionResult>;
+
+    /// List jobs matching the filter.
+    async fn list_jobs(&self, filter: JobFilter) -> SchedResult<Vec<ScheduledJob>>;
+
+    /// Create a workflow builder.
+    fn create_workflow(&self, name: &str) -> WorkflowBuilder;
+
+    /// Submit a workflow for execution.
+    async fn submit_workflow(&self, workflow: Workflow) -> SchedResult<WorkflowId>;
+
+    /// Get the status of a workflow.
+    async fn workflow_status(&self, workflow_id: &WorkflowId) -> SchedResult<WorkflowStatus>;
+
+    /// Wait for a workflow to complete.
+    async fn wait_workflow(&self, workflow_id: &WorkflowId) -> SchedResult<()>;
+}
+
+/// HPC Scheduler with SLURM integration.
+pub struct HpcScheduler {
+    config: SchedulerConfig,
+    slurm: SlurmAdapter,
+    matcher: ResourceMatcher,
+    store: Arc<dyn StateStore>,
+    queue: RwLock<PriorityQueue>,
+    workflows: RwLock<rustc_hash::FxHashMap<WorkflowId, Workflow>>,
+    completed_jobs: RwLock<rustc_hash::FxHashSet<ScheduledJobId>>,
+}
+
+impl HpcScheduler {
+    /// Create a new HPC scheduler.
+    pub async fn new(
+        config: SchedulerConfig,
+        backends: Vec<Arc<dyn Backend>>,
+        store: Arc<dyn StateStore>,
+    ) -> SchedResult<Self> {
+        let slurm = SlurmAdapter::new(config.slurm.clone()).await?;
+        let matcher = ResourceMatcher::new(backends);
+
+        Ok(Self {
+            config,
+            slurm,
+            matcher,
+            store,
+            queue: RwLock::new(PriorityQueue::new()),
+            workflows: RwLock::new(rustc_hash::FxHashMap::default()),
+            completed_jobs: RwLock::new(rustc_hash::FxHashSet::default()),
+        })
+    }
+
+    /// Create a scheduler with a mock SLURM adapter (for testing).
+    pub fn with_mock_slurm(
+        config: SchedulerConfig,
+        backends: Vec<Arc<dyn Backend>>,
+        store: Arc<dyn StateStore>,
+    ) -> Self {
+        let slurm = SlurmAdapter::mock(config.slurm.clone());
+        let matcher = ResourceMatcher::new(backends);
+
+        Self {
+            config,
+            slurm,
+            matcher,
+            store,
+            queue: RwLock::new(PriorityQueue::new()),
+            workflows: RwLock::new(rustc_hash::FxHashMap::default()),
+            completed_jobs: RwLock::new(rustc_hash::FxHashSet::default()),
+        }
+    }
+
+    /// Start the background job processing loop.
+    pub fn start_background_processor(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let scheduler = self.clone();
+        let poll_interval = Duration::from_secs(self.config.poll_interval_secs);
+
+        tokio::spawn(async move {
+            let mut ticker = interval(poll_interval);
+            loop {
+                ticker.tick().await;
+                if let Err(e) = scheduler.process_pending_jobs().await {
+                    tracing::error!("Error processing jobs: {}", e);
+                }
+                if let Err(e) = scheduler.update_job_statuses().await {
+                    tracing::error!("Error updating job statuses: {}", e);
+                }
+            }
+        })
+    }
+
+    /// Process pending jobs from the queue.
+    async fn process_pending_jobs(&self) -> SchedResult<()> {
+        let completed = self.completed_jobs.read().await;
+        let ready_jobs = {
+            let mut queue = self.queue.write().await;
+            queue.drain_ready(&completed)
+        };
+
+        for mut job in ready_jobs {
+            // Match resources if enabled
+            if self.config.auto_match_resources && job.matched_backend.is_none() {
+                match self.matcher.find_match(&job.requirements).await {
+                    Ok(match_result) => {
+                        job.matched_backend = Some(match_result.backend_name);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Resource matching failed for job {}: {}", job.id, e);
+                        job.status = ScheduledJobStatus::Failed {
+                            reason: e.to_string(),
+                            slurm_job_id: None,
+                            quantum_job_id: None,
+                        };
+                        self.store.save_job(&job).await?;
+                        continue;
+                    }
+                }
+            }
+
+            // Submit to SLURM
+            match self.slurm.submit(&job).await {
+                Ok(slurm_job_id) => {
+                    job.status = ScheduledJobStatus::SlurmQueued { slurm_job_id };
+                    job.submitted_at = Some(chrono::Utc::now());
+                    self.store.save_job(&job).await?;
+                    tracing::info!("Submitted job {} to SLURM", job.id);
+                }
+                Err(e) => {
+                    tracing::error!("SLURM submission failed for job {}: {}", job.id, e);
+                    job.status = ScheduledJobStatus::Failed {
+                        reason: e.to_string(),
+                        slurm_job_id: None,
+                        quantum_job_id: None,
+                    };
+                    self.store.save_job(&job).await?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Update statuses of running jobs.
+    async fn update_job_statuses(&self) -> SchedResult<()> {
+        let jobs = self
+            .store
+            .list_jobs(&JobFilter::running())
+            .await?;
+
+        for job in jobs {
+            if let Some(slurm_job_id) = job.status.slurm_job_id() {
+                match self.slurm.status(slurm_job_id).await {
+                    Ok(info) => {
+                        let new_status = self.map_slurm_status(&job, &info);
+                        if new_status != job.status {
+                            self.store.update_status(&job.id, new_status.clone()).await?;
+
+                            if new_status.is_terminal() {
+                                let mut completed = self.completed_jobs.write().await;
+                                completed.insert(job.id.clone());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to get status for SLURM job {}: {}",
+                            slurm_job_id,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        // Update workflow statuses
+        let mut workflows = self.workflows.write().await;
+        for workflow in workflows.values_mut() {
+            if !workflow.status.is_terminal() {
+                workflow.update_status();
+                self.store.save_workflow(workflow).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Map SLURM job state to scheduler job status.
+    fn map_slurm_status(
+        &self,
+        job: &ScheduledJob,
+        info: &crate::slurm::SlurmJobInfo,
+    ) -> ScheduledJobStatus {
+        let slurm_job_id = info.job_id.clone();
+
+        match &info.state {
+            SlurmState::Pending => ScheduledJobStatus::SlurmQueued { slurm_job_id },
+            SlurmState::Running | SlurmState::Completing => {
+                ScheduledJobStatus::SlurmRunning { slurm_job_id }
+            }
+            SlurmState::Completed => {
+                // Job completed - in a real scenario, we'd read the result file
+                // and get the quantum job ID from it
+                ScheduledJobStatus::Completed {
+                    slurm_job_id,
+                    quantum_job_id: hiq_hal::JobId("completed".to_string()),
+                }
+            }
+            SlurmState::Failed | SlurmState::NodeFail | SlurmState::OutOfMemory => {
+                ScheduledJobStatus::Failed {
+                    reason: format!("SLURM job failed: {:?}", info.state),
+                    slurm_job_id: Some(slurm_job_id),
+                    quantum_job_id: job.status.quantum_job_id().cloned(),
+                }
+            }
+            SlurmState::Timeout => ScheduledJobStatus::Failed {
+                reason: "SLURM job timed out".to_string(),
+                slurm_job_id: Some(slurm_job_id),
+                quantum_job_id: job.status.quantum_job_id().cloned(),
+            },
+            SlurmState::Cancelled | SlurmState::Preempted => ScheduledJobStatus::Cancelled,
+            SlurmState::Unknown(state) => {
+                tracing::warn!("Unknown SLURM state: {}", state);
+                job.status.clone()
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Scheduler for HpcScheduler {
+    async fn submit(&self, mut job: ScheduledJob) -> SchedResult<ScheduledJobId> {
+        let job_id = job.id.clone();
+
+        // Check if job has unsatisfied dependencies
+        if !job.dependencies.is_empty() {
+            let completed = self.completed_jobs.read().await;
+            if !job.dependencies_satisfied(&completed) {
+                job.status = ScheduledJobStatus::WaitingOnDependencies;
+            }
+        }
+
+        // Save to store
+        self.store.save_job(&job).await?;
+
+        // Add to queue
+        let mut queue = self.queue.write().await;
+        queue.push(job);
+
+        tracing::info!("Job {} submitted to scheduler", job_id);
+        Ok(job_id)
+    }
+
+    async fn submit_batch(
+        &self,
+        name: &str,
+        circuits: Vec<CircuitSpec>,
+        shots: u32,
+        priority: Priority,
+        requirements: ResourceRequirements,
+    ) -> SchedResult<ScheduledJobId> {
+        let job = ScheduledJob::batch(name, circuits)
+            .with_shots(shots)
+            .with_priority(priority)
+            .with_requirements(requirements);
+
+        self.submit(job).await
+    }
+
+    async fn status(&self, job_id: &ScheduledJobId) -> SchedResult<ScheduledJobStatus> {
+        // Check queue first
+        {
+            let queue = self.queue.read().await;
+            if let Some(job) = queue.get(job_id) {
+                return Ok(job.status.clone());
+            }
+        }
+
+        // Check store
+        let job = self
+            .store
+            .load_job(job_id)
+            .await?
+            .ok_or_else(|| SchedError::JobNotFound(job_id.to_string()))?;
+
+        Ok(job.status)
+    }
+
+    async fn cancel(&self, job_id: &ScheduledJobId) -> SchedResult<()> {
+        // Remove from queue if present
+        {
+            let mut queue = self.queue.write().await;
+            if queue.remove(job_id).is_some() {
+                self.store
+                    .update_status(job_id, ScheduledJobStatus::Cancelled)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        // Check if job is running on SLURM
+        let job = self
+            .store
+            .load_job(job_id)
+            .await?
+            .ok_or_else(|| SchedError::JobNotFound(job_id.to_string()))?;
+
+        if let Some(slurm_job_id) = job.status.slurm_job_id() {
+            self.slurm.cancel(slurm_job_id).await?;
+        }
+
+        self.store
+            .update_status(job_id, ScheduledJobStatus::Cancelled)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn wait(&self, job_id: &ScheduledJobId) -> SchedResult<ExecutionResult> {
+        let poll_interval = Duration::from_secs(self.config.poll_interval_secs);
+        let max_wait = Duration::from_secs(self.config.max_wait_time_secs);
+        let start = std::time::Instant::now();
+
+        loop {
+            let status = self.status(job_id).await?;
+
+            if status.is_terminal() {
+                if status.is_success() {
+                    return self.result(job_id).await;
+                } else {
+                    return Err(SchedError::JobNotFound(format!(
+                        "Job {} failed or was cancelled: {:?}",
+                        job_id, status
+                    )));
+                }
+            }
+
+            if start.elapsed() > max_wait {
+                return Err(SchedError::Timeout(format!(
+                    "Timeout waiting for job {}",
+                    job_id
+                )));
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+
+    async fn result(&self, job_id: &ScheduledJobId) -> SchedResult<ExecutionResult> {
+        self.store
+            .load_result(job_id)
+            .await?
+            .ok_or_else(|| SchedError::JobNotFound(format!("No result for job {}", job_id)))
+    }
+
+    async fn list_jobs(&self, filter: JobFilter) -> SchedResult<Vec<ScheduledJob>> {
+        self.store.list_jobs(&filter).await
+    }
+
+    fn create_workflow(&self, name: &str) -> WorkflowBuilder {
+        WorkflowBuilder::new(name)
+    }
+
+    async fn submit_workflow(&self, workflow: Workflow) -> SchedResult<WorkflowId> {
+        let workflow_id = workflow.id.clone();
+
+        // Save workflow
+        self.store.save_workflow(&workflow).await?;
+
+        // Submit all jobs
+        for job in workflow.all_jobs() {
+            self.store.save_job(job).await?;
+            let mut queue = self.queue.write().await;
+            queue.push(job.clone());
+        }
+
+        // Store workflow for tracking
+        {
+            let mut workflows = self.workflows.write().await;
+            workflows.insert(workflow_id.clone(), workflow);
+        }
+
+        tracing::info!("Workflow {} submitted", workflow_id);
+        Ok(workflow_id)
+    }
+
+    async fn workflow_status(&self, workflow_id: &WorkflowId) -> SchedResult<WorkflowStatus> {
+        let workflows = self.workflows.read().await;
+        workflows
+            .get(workflow_id)
+            .map(|w| w.status.clone())
+            .ok_or_else(|| SchedError::WorkflowNotFound(workflow_id.to_string()))
+    }
+
+    async fn wait_workflow(&self, workflow_id: &WorkflowId) -> SchedResult<()> {
+        let poll_interval = Duration::from_secs(self.config.poll_interval_secs);
+        let max_wait = Duration::from_secs(self.config.max_wait_time_secs);
+        let start = std::time::Instant::now();
+
+        loop {
+            let status = self.workflow_status(workflow_id).await?;
+
+            if status.is_terminal() {
+                return match status {
+                    WorkflowStatus::Completed => Ok(()),
+                    WorkflowStatus::Failed { reason } => {
+                        Err(SchedError::Internal(format!("Workflow failed: {}", reason)))
+                    }
+                    WorkflowStatus::Cancelled => Err(SchedError::Cancelled(workflow_id.to_string())),
+                    _ => unreachable!(),
+                };
+            }
+
+            if start.elapsed() > max_wait {
+                return Err(SchedError::Timeout(format!(
+                    "Timeout waiting for workflow {}",
+                    workflow_id
+                )));
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::persistence::SqliteStore;
+    use hiq_hal::{Capabilities, Counts};
+
+    /// Mock backend for testing.
+    struct MockBackend {
+        name: String,
+        num_qubits: u32,
+    }
+
+    #[async_trait]
+    impl Backend for MockBackend {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn capabilities(&self) -> hiq_hal::HalResult<Capabilities> {
+            Ok(Capabilities::simulator(self.num_qubits))
+        }
+
+        async fn is_available(&self) -> hiq_hal::HalResult<bool> {
+            Ok(true)
+        }
+
+        async fn submit(
+            &self,
+            _circuit: &hiq_ir::Circuit,
+            _shots: u32,
+        ) -> hiq_hal::HalResult<hiq_hal::JobId> {
+            Ok(hiq_hal::JobId("mock".to_string()))
+        }
+
+        async fn status(&self, _job_id: &hiq_hal::JobId) -> hiq_hal::HalResult<hiq_hal::JobStatus> {
+            Ok(hiq_hal::JobStatus::Completed)
+        }
+
+        async fn result(
+            &self,
+            _job_id: &hiq_hal::JobId,
+        ) -> hiq_hal::HalResult<hiq_hal::ExecutionResult> {
+            let counts = Counts::from_pairs([("00", 500u64), ("11", 500u64)]);
+            Ok(hiq_hal::ExecutionResult::new(counts, 1000))
+        }
+
+        async fn cancel(&self, _job_id: &hiq_hal::JobId) -> hiq_hal::HalResult<()> {
+            Ok(())
+        }
+
+        async fn wait(
+            &self,
+            job_id: &hiq_hal::JobId,
+        ) -> hiq_hal::HalResult<hiq_hal::ExecutionResult> {
+            self.result(job_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_submit() {
+        let config = SchedulerConfig::default();
+        let backends: Vec<Arc<dyn Backend>> = vec![Arc::new(MockBackend {
+            name: "test_backend".to_string(),
+            num_qubits: 10,
+        })];
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+
+        let scheduler = HpcScheduler::with_mock_slurm(config, backends, store);
+
+        let circuit = CircuitSpec::from_qasm("OPENQASM 3.0; qubit[2] q; h q[0]; cx q[0], q[1];");
+        let job = ScheduledJob::new("test_job", circuit);
+        let job_id = job.id.clone();
+
+        let submitted_id = scheduler.submit(job).await.unwrap();
+        assert_eq!(submitted_id, job_id);
+
+        let status = scheduler.status(&job_id).await.unwrap();
+        assert!(status.is_pending());
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_submit_batch() {
+        let config = SchedulerConfig::default();
+        let backends: Vec<Arc<dyn Backend>> = vec![Arc::new(MockBackend {
+            name: "test_backend".to_string(),
+            num_qubits: 10,
+        })];
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+
+        let scheduler = HpcScheduler::with_mock_slurm(config, backends, store);
+
+        let circuits = vec![
+            CircuitSpec::from_qasm("OPENQASM 3.0; qubit[2] q; h q[0];"),
+            CircuitSpec::from_qasm("OPENQASM 3.0; qubit[2] q; x q[0];"),
+        ];
+
+        let job_id = scheduler
+            .submit_batch(
+                "batch_test",
+                circuits,
+                1000,
+                Priority::default(),
+                ResourceRequirements::default(),
+            )
+            .await
+            .unwrap();
+
+        let status = scheduler.status(&job_id).await.unwrap();
+        assert!(status.is_pending());
+    }
+
+    #[tokio::test]
+    async fn test_scheduler_workflow() {
+        let config = SchedulerConfig::default();
+        let backends: Vec<Arc<dyn Backend>> = vec![Arc::new(MockBackend {
+            name: "test_backend".to_string(),
+            num_qubits: 10,
+        })];
+        let store = Arc::new(SqliteStore::in_memory().unwrap());
+
+        let scheduler = HpcScheduler::with_mock_slurm(config, backends, store);
+
+        let circuit = CircuitSpec::from_qasm("OPENQASM 3.0; qubit[2] q;");
+        let job1 = ScheduledJob::new("job1", circuit.clone());
+        let job2 = ScheduledJob::new("job2", circuit);
+
+        let workflow = scheduler
+            .create_workflow("test_workflow")
+            .add_job(job1)
+            .then(job2)
+            .unwrap()
+            .build();
+
+        let workflow_id = scheduler.submit_workflow(workflow).await.unwrap();
+
+        let status = scheduler.workflow_status(&workflow_id).await.unwrap();
+        assert!(matches!(status, WorkflowStatus::Pending));
+    }
+}
