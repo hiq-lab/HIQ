@@ -95,7 +95,7 @@ pub fn run_multi_demo(jobs: &[DemoJob], show_progress: bool) -> MultiDemoResult 
                 }
 
                 let iterations = optimal_iterations(*n_qubits);
-                let circuit = grover_circuit(*n_qubits, *marked_state, iterations);
+                let _circuit = grover_circuit(*n_qubits, *marked_state, iterations);
 
                 if let Some(ref pb) = pb {
                     pb.set_position(100);
@@ -199,7 +199,7 @@ pub fn run_multi_demo(jobs: &[DemoJob], show_progress: bool) -> MultiDemoResult 
 
                 for step in 0..*count {
                     // Generate a simple Bell circuit
-                    let circuit = hiq_ir::Circuit::bell().unwrap();
+                    let _circuit = hiq_ir::Circuit::bell().unwrap();
                     if let Some(ref pb) = pb {
                         pb.set_position(step as u64);
                     }

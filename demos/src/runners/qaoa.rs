@@ -2,7 +2,10 @@
 //!
 //! QAOA finds approximate solutions to combinatorial optimization problems.
 
-use crate::circuits::qaoa::{initial_parameters, num_parameters, qaoa_circuit_no_measure};
+use crate::circuits::qaoa::{
+    graph_aware_initial_parameters, initial_parameters_with_strategy, num_parameters,
+    qaoa_circuit_no_measure, InitStrategy, ParameterBounds,
+};
 use crate::optimizers::{Cobyla, Optimizer};
 use crate::problems::Graph;
 
@@ -37,6 +40,12 @@ pub struct QaoaRunner {
     pub shots: u32,
     /// Maximum optimization iterations.
     pub maxiter: usize,
+    /// Initialization strategy.
+    pub init_strategy: InitStrategy,
+    /// Use graph-aware initialization.
+    pub use_graph_aware_init: bool,
+    /// Parameter bounds for optimization.
+    pub bounds: Option<ParameterBounds>,
 }
 
 impl QaoaRunner {
@@ -47,6 +56,9 @@ impl QaoaRunner {
             p: 1,
             shots: 1024,
             maxiter: 100,
+            init_strategy: InitStrategy::TrotterizedAdiabatic,
+            use_graph_aware_init: true,
+            bounds: Some(ParameterBounds::tight()),
         }
     }
 
@@ -68,11 +80,76 @@ impl QaoaRunner {
         self
     }
 
-    /// Run QAOA with default initial parameters.
+    /// Set the initialization strategy.
+    pub fn with_init_strategy(mut self, strategy: InitStrategy) -> Self {
+        self.init_strategy = strategy;
+        self
+    }
+
+    /// Enable or disable graph-aware initialization.
+    pub fn with_graph_aware_init(mut self, enabled: bool) -> Self {
+        self.use_graph_aware_init = enabled;
+        self
+    }
+
+    /// Set parameter bounds.
+    pub fn with_bounds(mut self, bounds: ParameterBounds) -> Self {
+        self.bounds = Some(bounds);
+        self
+    }
+
+    /// Disable parameter bounds.
+    pub fn without_bounds(mut self) -> Self {
+        self.bounds = None;
+        self
+    }
+
+    /// Run QAOA with automatic initial parameters.
     pub fn run(&self) -> QaoaResult {
-        let (gamma, beta) = initial_parameters(self.p);
+        let (gamma, beta) = if self.use_graph_aware_init {
+            graph_aware_initial_parameters(&self.graph, self.p)
+        } else {
+            initial_parameters_with_strategy(self.p, self.init_strategy)
+        };
         let initial_params: Vec<f64> = gamma.into_iter().chain(beta).collect();
         self.run_with_params(initial_params)
+    }
+
+    /// Run QAOA with multiple random restarts and return the best result.
+    pub fn run_with_restarts(&self, n_restarts: usize) -> QaoaResult {
+        let mut best_result: Option<QaoaResult> = None;
+
+        for restart in 0..n_restarts {
+            // Use different initialization for each restart
+            let (mut gamma, mut beta) = if restart == 0 && self.use_graph_aware_init {
+                graph_aware_initial_parameters(&self.graph, self.p)
+            } else {
+                // Use random initialization with different seeds
+                let mut seed: u64 = 42 + restart as u64 * 12345;
+                let mut rand = || {
+                    seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                    (seed as f64 / u64::MAX as f64) * std::f64::consts::PI / 2.0
+                };
+                (
+                    (0..self.p).map(|_| rand()).collect(),
+                    (0..self.p).map(|_| rand()).collect(),
+                )
+            };
+
+            // Apply bounds if configured
+            if let Some(ref bounds) = self.bounds {
+                bounds.clip(&mut gamma, &mut beta);
+            }
+
+            let initial_params: Vec<f64> = gamma.into_iter().chain(beta).collect();
+            let result = self.run_with_params(initial_params);
+
+            if best_result.is_none() || result.best_cut > best_result.as_ref().unwrap().best_cut {
+                best_result = Some(result);
+            }
+        }
+
+        best_result.unwrap()
     }
 
     /// Run QAOA with specified initial parameters.

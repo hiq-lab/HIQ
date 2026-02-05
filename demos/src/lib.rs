@@ -7,6 +7,25 @@
 //! - **VQE (Variational Quantum Eigensolver)**: Hybrid classical-quantum workflow
 //! - **QAOA (Quantum Approximate Optimization)**: Graph optimization
 //! - **Multi-Job Orchestration**: Parallel job management showcase
+//!
+//! # Scheduler Integration
+//!
+//! The [`runners::ScheduledRunner`] provides integration with HiQ's HPC scheduler
+//! for submitting quantum workloads to SLURM-managed clusters:
+//!
+//! ```ignore
+//! use hiq_demos::runners::ScheduledRunner;
+//! use hiq_sched::{HpcScheduler, Priority};
+//!
+//! let scheduler = Arc::new(HpcScheduler::new(config).await?);
+//! let runner = ScheduledRunner::new(scheduler);
+//!
+//! // Submit a Grover search job
+//! let job_id = runner.submit_grover(4, 7, Priority::high()).await?;
+//!
+//! // Wait for completion
+//! let result = runner.wait(&job_id).await?;
+//! ```
 
 pub mod circuits;
 pub mod optimizers;

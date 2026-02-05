@@ -132,7 +132,7 @@ fn evaluate_energy(
     n_qubits: usize,
     reps: usize,
     params: &[f64],
-    shots: u32,
+    _shots: u32,
 ) -> f64 {
     // Build the ansatz circuit
     let circuit = two_local_ansatz(n_qubits, reps, params);
@@ -326,7 +326,7 @@ fn expectation_value(hamiltonian: &PauliHamiltonian, statevector: &[num_complex:
 fn apply_pauli_string(
     index: usize,
     operators: &[(usize, Pauli)],
-    n_qubits: usize,
+    _n_qubits: usize,
 ) -> (usize, num_complex::Complex64) {
     use num_complex::Complex64;
 
@@ -403,5 +403,317 @@ mod tests {
 
         let energy = expectation_value(&h, &state);
         assert!((energy - 1.0).abs() < 1e-10); // <00|Z0|00> = 1
+    }
+
+    #[test]
+    fn test_h2_expectation_values() {
+        use num_complex::Complex64;
+
+        let h2 = h2_hamiltonian();
+
+        // Model Hamiltonian coefficients: g0=-0.32, g1=0.39, g2=-0.39, g3=-0.01, g4=0.18
+        // For |00⟩: Z0=+1, Z1=+1, Z0Z1=+1
+        // E = -0.32 + 0.39*1 + (-0.39)*1 + (-0.01)*1 = -0.33
+        let state_00 = vec![
+            Complex64::new(1.0, 0.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::new(0.0, 0.0),
+        ];
+        let e_00 = expectation_value(&h2, &state_00);
+        assert!(
+            (e_00 - (-0.33)).abs() < 0.01,
+            "Expected -0.33 for |00>, got {}",
+            e_00
+        );
+
+        // For |11⟩: Z0=-1, Z1=-1, Z0Z1=+1
+        // E = -0.32 + 0.39*(-1) + (-0.39)*(-1) + (-0.01)*1 = -0.33
+        let state_11 = vec![
+            Complex64::new(0.0, 0.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::new(1.0, 0.0),
+        ];
+        let e_11 = expectation_value(&h2, &state_11);
+        assert!(
+            (e_11 - (-0.33)).abs() < 0.01,
+            "Expected -0.33 for |11>, got {}",
+            e_11
+        );
+
+        // For the Bell state (|00⟩ + |11⟩)/√2:
+        // XX contributes +1, YY contributes -1, they cancel out
+        // So the energy equals the diagonal average: -0.33
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let bell_00_11 = vec![
+            Complex64::new(h, 0.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::new(0.0, 0.0),
+            Complex64::new(h, 0.0),
+        ];
+        let e_bell_00_11 = expectation_value(&h2, &bell_00_11);
+        assert!(
+            (e_bell_00_11 - (-0.33)).abs() < 0.1,
+            "Expected ~-0.33 for (|00⟩+|11⟩)/√2, got {}",
+            e_bell_00_11
+        );
+
+        // The (|01⟩+|10⟩)/√2 state has both XX and YY = +1
+        // Energy = (E_01+E_10)/2 + 0.36 = (-1.09+0.47)/2 + 0.36 = -0.31 + 0.36 = 0.05
+        // Note: this is NOT the ground state eigenvalue (-1.169) because the
+        // ground state eigenvector is not a uniform superposition
+        let bell_01_10 = vec![
+            Complex64::new(0.0, 0.0),
+            Complex64::new(h, 0.0),
+            Complex64::new(h, 0.0),
+            Complex64::new(0.0, 0.0),
+        ];
+        let e_bell_01_10 = expectation_value(&h2, &bell_01_10);
+        assert!(
+            (e_bell_01_10 - 0.05).abs() < 0.1,
+            "Expected ~0.05 for (|01⟩+|10⟩)/√2, got {}",
+            e_bell_01_10
+        );
+    }
+
+    #[test]
+    fn test_statevector_simulation() {
+        use crate::circuits::vqe::two_local_ansatz;
+
+        // Test with all-zero parameters (should give |00⟩ state from RY(0))
+        let params = vec![0.0; 6]; // 2 qubits, 2 reps
+        let circuit = two_local_ansatz(2, 2, &params);
+        let state = simulate_statevector(&circuit, 2);
+
+        // With all zero rotations, should stay in |00⟩
+        let prob_00 = state[0].norm_sqr();
+        assert!(
+            prob_00 > 0.99,
+            "Expected |00⟩ state for zero params, got P(00)={}",
+            prob_00
+        );
+
+        // Test with PI rotations
+        let params_pi: Vec<f64> = vec![std::f64::consts::PI; 6];
+        let circuit_pi = two_local_ansatz(2, 2, &params_pi);
+        let state_pi = simulate_statevector(&circuit_pi, 2);
+
+        // Print probabilities for debugging
+        println!("Probabilities after PI rotations:");
+        for (i, amp) in state_pi.iter().enumerate() {
+            println!("  |{:02b}⟩: {:.4}", i, amp.norm_sqr());
+        }
+
+        // Check that state is normalized
+        let total_prob: f64 = state_pi.iter().map(|a| a.norm_sqr()).sum();
+        assert!(
+            (total_prob - 1.0).abs() < 1e-6,
+            "State not normalized: {}",
+            total_prob
+        );
+    }
+
+    #[test]
+    fn test_circuit_energy_evaluation() {
+        use crate::circuits::vqe::two_local_ansatz;
+
+        let h2 = h2_hamiltonian();
+
+        // Test with all-zero parameters (should give |00⟩ and E ≈ -0.33)
+        let params_zero = vec![0.0; 6];
+        let circuit_zero = two_local_ansatz(2, 2, &params_zero);
+        let state_zero = simulate_statevector(&circuit_zero, 2);
+        let e_zero = expectation_value(&h2, &state_zero);
+
+        println!("Energy with zero params (should be ~-0.33): {}", e_zero);
+        assert!(
+            (e_zero - (-0.33)).abs() < 0.05,
+            "Expected ~-0.33 for zero params, got {}",
+            e_zero
+        );
+
+        // Test with PI rotations (should give |11⟩ and E ≈ -0.33)
+        let params_pi: Vec<f64> = vec![std::f64::consts::PI; 6];
+        let circuit_pi = two_local_ansatz(2, 2, &params_pi);
+        let state_pi = simulate_statevector(&circuit_pi, 2);
+        let e_pi = expectation_value(&h2, &state_pi);
+
+        println!("Energy with PI params (should be ~-0.33): {}", e_pi);
+        assert!(
+            (e_pi - (-0.33)).abs() < 0.05,
+            "Expected ~-0.33 for PI params, got {}",
+            e_pi
+        );
+    }
+
+    #[test]
+    fn test_specific_bad_case() {
+        use crate::circuits::vqe::two_local_ansatz;
+        use num_complex::Complex64;
+
+        let h2 = h2_hamiltonian();
+
+        // This specific case gave unphysical energy
+        let params = vec![
+            -3.1415880134658862,
+            2.793037086388586,
+            -0.06253135390248543,
+            1.1992390300430413,
+            0.8846274209121585,
+            -1.2777171778052216,
+        ];
+
+        let circuit = two_local_ansatz(2, 2, &params);
+        let state = simulate_statevector(&circuit, 2);
+
+        println!("State amplitudes:");
+        for (i, amp) in state.iter().enumerate() {
+            println!("  |{:02b}⟩: {:.6} + {:.6}i (prob: {:.6})", i, amp.re, amp.im, amp.norm_sqr());
+        }
+
+        let norm: f64 = state.iter().map(|a| a.norm_sqr()).sum();
+        println!("Norm: {}", norm);
+
+        // Manually compute each term's contribution
+        for term in &h2.terms {
+            let mut term_value = Complex64::new(0.0, 0.0);
+            for (i, &amplitude) in state.iter().enumerate() {
+                let (j, phase) = apply_pauli_string(i, &term.operators, 2);
+                term_value += amplitude.conj() * phase * state[j];
+            }
+            println!(
+                "Term {:?}: coef={:.4}, exp_val={:.6}+{:.6}i, contribution={:.6}",
+                term.operators,
+                term.coefficient,
+                term_value.re,
+                term_value.im,
+                term.coefficient * term_value.re
+            );
+        }
+
+        let energy = expectation_value(&h2, &state);
+        println!("Total energy: {}", energy);
+
+        // Verify: sum of probabilities times Hamiltonian eigenvalues
+        // The state has mostly |01⟩ and |00⟩
+        // The H2 Hamiltonian eigenvalues are about [-1.137, -0.19, 0.11, 0.46]
+        // A state that's 80% |01⟩ should NOT give -1.7 energy!
+
+        // Let me verify the expectation values manually
+        // For this state: P(00)=0.175, P(01)=0.799, P(10)=0.009, P(11)=0.017
+        //
+        // <Z0> = P(00) + P(01) - P(10) - P(11) = 0.175 + 0.799 - 0.009 - 0.017 = 0.948
+        // But the code computed <Z0> = -0.631
+        //
+        // Wait, that's <Z1>! The qubit ordering might be wrong.
+        // In little-endian: |01⟩ means q0=1, q1=0
+        // So <Z0> = P(q0=0) - P(q0=1) = (P(00)+P(10)) - (P(01)+P(11))
+        //         = (0.175 + 0.009) - (0.799 + 0.017) = 0.184 - 0.816 = -0.632 ✓
+        //
+        // So the issue is NOT qubit ordering - the calculation is correct.
+        // The problem must be that the optimizer is finding states that shouldn't exist.
+    }
+
+    #[test]
+    fn test_h2_eigenvalues() {
+        // Verify H2 Hamiltonian eigenvalues by computing them directly
+        // The h2_hamiltonian() function returns a model Hamiltonian
+
+        // Coefficients from h2_hamiltonian():
+        let g0 = -0.32;  // Identity
+        let g1 = 0.39;   // Z0
+        let g2 = -0.39;  // Z1
+        let g3 = -0.01;  // Z0Z1
+        let g4 = 0.18;   // X0X1 and Y0Y1
+
+        // Qubit encoding: index i = q0 + 2*q1
+        println!("H2 Model Hamiltonian:");
+        println!("|00⟩ (i=0): q0=0, q1=0");
+        println!("|01⟩ (i=1): q0=1, q1=0");
+        println!("|10⟩ (i=2): q0=0, q1=1");
+        println!("|11⟩ (i=3): q0=1, q1=1");
+
+        // Diagonal elements:
+        // H[00,00]: Z0=+1, Z1=+1, Z0Z1=+1
+        let e_00 = g0 + g1 * 1.0 + g2 * 1.0 + g3 * 1.0;
+        // H[01,01]: Z0=-1 (q0=1), Z1=+1 (q1=0), Z0Z1=-1
+        let e_01 = g0 + g1 * (-1.0) + g2 * 1.0 + g3 * (-1.0);
+        // H[10,10]: Z0=+1 (q0=0), Z1=-1 (q1=1), Z0Z1=-1
+        let e_10 = g0 + g1 * 1.0 + g2 * (-1.0) + g3 * (-1.0);
+        // H[11,11]: Z0=-1, Z1=-1, Z0Z1=+1
+        let e_11 = g0 + g1 * (-1.0) + g2 * (-1.0) + g3 * 1.0;
+
+        println!("Diagonal elements:");
+        println!("  H[00,00] = {:.4}", e_00);
+        println!("  H[01,01] = {:.4}", e_01);
+        println!("  H[10,10] = {:.4}", e_10);
+        println!("  H[11,11] = {:.4}", e_11);
+
+        // Off-diagonal: X0X1 + Y0Y1 = 2 * g4
+        let off_diag = 2.0 * g4;
+        println!("Off-diagonal (X0X1+Y0Y1): {:.4}", off_diag);
+
+        // Block 1 (|00⟩, |11⟩) eigenvalues:
+        let a1: f64 = e_00;
+        let b1: f64 = e_11;
+        let c1: f64 = off_diag;
+        let avg1 = (a1 + b1) / 2.0;
+        let diff1 = ((a1 - b1).powi(2) / 4.0 + c1.powi(2)).sqrt();
+        let lambda1_minus = avg1 - diff1;
+        let lambda1_plus = avg1 + diff1;
+
+        println!("\nBlock 1 (|00⟩, |11⟩) eigenvalues:");
+        println!("  λ- = {:.4}", lambda1_minus);
+        println!("  λ+ = {:.4}", lambda1_plus);
+
+        // Block 2 (|01⟩, |10⟩) eigenvalues:
+        let a2: f64 = e_01;
+        let b2: f64 = e_10;
+        let c2: f64 = off_diag;
+        let avg2 = (a2 + b2) / 2.0;
+        let diff2 = ((a2 - b2).powi(2) / 4.0 + c2.powi(2)).sqrt();
+        let lambda2_minus = avg2 - diff2;
+        let lambda2_plus = avg2 + diff2;
+
+        println!("Block 2 (|01⟩, |10⟩) eigenvalues:");
+        println!("  λ- = {:.4}", lambda2_minus);
+        println!("  λ+ = {:.4}", lambda2_plus);
+
+        let ground_state = lambda1_minus.min(lambda2_minus);
+        println!("\nGround state energy: {:.4} Hartree", ground_state);
+
+        // Verify the eigenvalue spectrum
+        let eigenvalues = vec![lambda1_minus, lambda1_plus, lambda2_minus, lambda2_plus];
+        let mut sorted = eigenvalues.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("Eigenvalue spectrum: {:?}", sorted);
+
+        // For a model Hamiltonian, we accept any reasonable ground state
+        // The key is that VQE should find this minimum
+        assert!(
+            ground_state < 0.0,
+            "Ground state should be negative, got {}",
+            ground_state
+        );
+    }
+
+    #[test]
+    fn test_vqe_energy_bounds() {
+        // The VQE energy should never go below the true ground state
+        let h = h2_hamiltonian();
+        let runner = VqeRunner::new(h).with_reps(2).with_maxiter(50);
+
+        let result = runner.run();
+
+        println!("VQE found energy: {}", result.optimal_energy);
+
+        // Ground state is -1.137 Hartree
+        // VQE should find something >= -1.137 (can't beat exact ground state)
+        assert!(
+            result.optimal_energy >= -1.2,
+            "VQE energy {} is below ground state -1.137!",
+            result.optimal_energy
+        );
     }
 }

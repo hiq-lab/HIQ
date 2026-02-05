@@ -4,7 +4,9 @@
 
 use clap::Parser;
 
-use hiq_demos::problems::{exact_ground_state_energy, h2_hamiltonian, lih_hamiltonian};
+use hiq_demos::problems::{
+    beh2_hamiltonian, exact_ground_state_energy, h2_hamiltonian, h2o_hamiltonian, lih_hamiltonian,
+};
 use hiq_demos::runners::VqeRunner;
 use hiq_demos::{create_progress_bar, print_header, print_info, print_result, print_section, print_success};
 
@@ -12,7 +14,7 @@ use hiq_demos::{create_progress_bar, print_header, print_info, print_result, pri
 #[command(name = "demo-vqe")]
 #[command(about = "Demonstrate VQE for molecular ground state estimation")]
 struct Args {
-    /// Molecule to simulate (h2, lih)
+    /// Molecule to simulate (h2, lih, beh2, h2o)
     #[arg(short, long, default_value = "h2")]
     molecule: String,
 
@@ -42,8 +44,10 @@ fn main() {
     ) = match args.molecule.to_lowercase().as_str() {
         "h2" => (h2_hamiltonian(), "H₂ (Hydrogen)", exact_ground_state_energy("h2")),
         "lih" => (lih_hamiltonian(), "LiH (Lithium Hydride)", exact_ground_state_energy("lih")),
+        "beh2" => (beh2_hamiltonian(), "BeH₂ (Beryllium Hydride)", exact_ground_state_energy("beh2")),
+        "h2o" => (h2o_hamiltonian(), "H₂O (Water)", exact_ground_state_energy("h2o")),
         _ => {
-            eprintln!("Unknown molecule: {}. Available: h2, lih", args.molecule);
+            eprintln!("Unknown molecule: {}. Available: h2, lih, beh2, h2o", args.molecule);
             std::process::exit(1);
         }
     };

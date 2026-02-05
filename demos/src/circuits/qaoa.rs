@@ -100,16 +100,170 @@ pub fn qaoa_circuit_no_measure(graph: &Graph, gamma: &[f64], beta: &[f64]) -> Ci
     circuit
 }
 
-/// Calculate the optimal initial parameters for QAOA.
+/// Strategy for initializing QAOA parameters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum InitStrategy {
+    /// Linear interpolation: gamma increases, beta decreases.
+    Linear,
+    /// Fixed values: all gamma and beta are the same.
+    Fixed,
+    /// Trotterized adiabatic: mimics adiabatic evolution.
+    TrotterizedAdiabatic,
+    /// Random initialization within bounds.
+    Random,
+    /// Fourier-based initialization for smoother landscapes.
+    Fourier,
+}
+
+/// Calculate initial parameters for QAOA.
 ///
-/// Returns (gamma, beta) initialized to reasonable starting values.
-/// Based on heuristics from the literature.
+/// Returns (gamma, beta) initialized according to the specified strategy.
+/// Different strategies work better for different problem types.
 pub fn initial_parameters(p: usize) -> (Vec<f64>, Vec<f64>) {
-    // Interpolation-based initialization
-    // gamma starts small and increases, beta starts large and decreases
-    let gamma: Vec<f64> = (0..p).map(|i| PI / 4.0 * (i + 1) as f64 / p as f64).collect();
-    let beta: Vec<f64> = (0..p).map(|i| PI / 4.0 * (p - i) as f64 / p as f64).collect();
+    initial_parameters_with_strategy(p, InitStrategy::TrotterizedAdiabatic)
+}
+
+/// Calculate initial parameters with a specific strategy.
+///
+/// # Strategies
+/// - `Linear`: Simple linear interpolation, good baseline
+/// - `Fixed`: All parameters equal, useful for single-layer QAOA
+/// - `TrotterizedAdiabatic`: Mimics adiabatic evolution, often best for deeper circuits
+/// - `Random`: Random in [0, π/2], useful with multiple restarts
+/// - `Fourier`: Sine/cosine basis, smoother optimization landscape
+pub fn initial_parameters_with_strategy(
+    p: usize,
+    strategy: InitStrategy,
+) -> (Vec<f64>, Vec<f64>) {
+    match strategy {
+        InitStrategy::Linear => {
+            // gamma starts small and increases, beta starts large and decreases
+            let gamma: Vec<f64> = (0..p).map(|i| PI / 4.0 * (i + 1) as f64 / p as f64).collect();
+            let beta: Vec<f64> = (0..p).map(|i| PI / 4.0 * (p - i) as f64 / p as f64).collect();
+            (gamma, beta)
+        }
+        InitStrategy::Fixed => {
+            // Fixed at typical good values for shallow QAOA
+            let gamma = vec![PI / 4.0; p];
+            let beta = vec![PI / 8.0; p];
+            (gamma, beta)
+        }
+        InitStrategy::TrotterizedAdiabatic => {
+            // Mimics adiabatic time evolution with linear schedule
+            // s(t) goes from 0 to 1, with gamma ~ s and beta ~ (1-s)
+            // This often gives the best results for p >= 2
+            let dt = 1.0 / (p + 1) as f64;
+            let gamma: Vec<f64> = (1..=p)
+                .map(|i| {
+                    let s = i as f64 * dt;
+                    s * PI / 2.0 * dt
+                })
+                .collect();
+            let beta: Vec<f64> = (1..=p)
+                .map(|i| {
+                    let s = i as f64 * dt;
+                    (1.0 - s) * PI / 2.0 * dt
+                })
+                .collect();
+            (gamma, beta)
+        }
+        InitStrategy::Random => {
+            // Deterministic pseudo-random for reproducibility
+            let mut seed: u64 = 42;
+            let mut rand = || {
+                seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                (seed as f64 / u64::MAX as f64) * PI / 2.0
+            };
+            let gamma: Vec<f64> = (0..p).map(|_| rand()).collect();
+            let beta: Vec<f64> = (0..p).map(|_| rand()).collect();
+            (gamma, beta)
+        }
+        InitStrategy::Fourier => {
+            // Use sine/cosine basis for smoother landscape
+            // gamma_k = sum_j u_j * sin((j+1) * pi * k / (2p))
+            // For simplicity, just use the first Fourier mode
+            let gamma: Vec<f64> = (0..p)
+                .map(|k| PI / 4.0 * ((k as f64 + 0.5) * PI / p as f64).sin())
+                .collect();
+            let beta: Vec<f64> = (0..p)
+                .map(|k| PI / 4.0 * ((k as f64 + 0.5) * PI / p as f64).cos())
+                .collect();
+            (gamma, beta)
+        }
+    }
+}
+
+/// Calculate graph-aware initial parameters.
+///
+/// Uses properties of the graph to choose better starting parameters:
+/// - `avg_degree`: Higher degree graphs need smaller gamma
+/// - `n_nodes`: Larger graphs may need adjusted parameters
+/// - `max_cut_bound`: Upper bound on max cut value
+pub fn graph_aware_initial_parameters(graph: &Graph, p: usize) -> (Vec<f64>, Vec<f64>) {
+    let n = graph.n_nodes as f64;
+    let m = graph.edges.len() as f64;
+    let avg_degree = if n > 0.0 { 2.0 * m / n } else { 1.0 };
+
+    // Scale gamma inversely with average degree
+    // Higher connectivity means smaller gamma steps work better
+    let gamma_scale = 1.0 / avg_degree.sqrt();
+
+    let (mut gamma, beta) = initial_parameters_with_strategy(p, InitStrategy::TrotterizedAdiabatic);
+
+    // Scale gamma values
+    for g in &mut gamma {
+        *g *= gamma_scale;
+    }
+
     (gamma, beta)
+}
+
+/// Bounds for QAOA parameters.
+///
+/// Constraining parameters to these bounds often improves optimization.
+#[derive(Debug, Clone)]
+pub struct ParameterBounds {
+    /// Minimum gamma value.
+    pub gamma_min: f64,
+    /// Maximum gamma value.
+    pub gamma_max: f64,
+    /// Minimum beta value.
+    pub beta_min: f64,
+    /// Maximum beta value.
+    pub beta_max: f64,
+}
+
+impl Default for ParameterBounds {
+    fn default() -> Self {
+        Self {
+            gamma_min: 0.0,
+            gamma_max: PI,
+            beta_min: 0.0,
+            beta_max: PI / 2.0,
+        }
+    }
+}
+
+impl ParameterBounds {
+    /// Tight bounds for faster convergence on typical Max-Cut instances.
+    pub fn tight() -> Self {
+        Self {
+            gamma_min: 0.0,
+            gamma_max: PI / 2.0,
+            beta_min: 0.0,
+            beta_max: PI / 4.0,
+        }
+    }
+
+    /// Clip parameters to bounds.
+    pub fn clip(&self, gamma: &mut [f64], beta: &mut [f64]) {
+        for g in gamma {
+            *g = g.clamp(self.gamma_min, self.gamma_max);
+        }
+        for b in beta {
+            *b = b.clamp(self.beta_min, self.beta_max);
+        }
+    }
 }
 
 /// Calculate the number of QAOA parameters.

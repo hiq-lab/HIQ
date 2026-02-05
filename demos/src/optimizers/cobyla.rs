@@ -82,7 +82,7 @@ impl Optimizer for Cobyla {
         // This is a simplified version for demo purposes
 
         let n = initial_params.len();
-        let mut x = initial_params.clone();
+        let x = initial_params.clone();
         let mut f_x = objective(&x);
         let mut history = vec![f_x];
         let mut num_evaluations = 1;
@@ -103,7 +103,7 @@ impl Optimizer for Cobyla {
         let mut rho = self.rhobeg;
         let mut converged = false;
 
-        for iteration in 0..self.maxiter {
+        for _iteration in 0..self.maxiter {
             // Sort simplex by function value
             let mut indices: Vec<usize> = (0..=n).collect();
             indices.sort_by(|&a, &b| f_simplex[a].partial_cmp(&f_simplex[b]).unwrap());
@@ -226,7 +226,6 @@ impl Optimizer for Cobyla {
                 .unwrap();
 
             if f_simplex[min_idx] < f_x {
-                x = simplex[min_idx].clone();
                 f_x = f_simplex[min_idx];
                 history.push(f_x);
             }
