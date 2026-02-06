@@ -61,7 +61,7 @@ The VQE algorithm:
 
 ```bash
 # Clone HIQ
-git clone https://github.com/hiq-lab/HIQ.git
+git clone https://github.com/hiq-lab/arvak.git
 cd HIQ
 
 # Load modules
@@ -269,7 +269,7 @@ cargo test -p hiq-adapter-iqm
 - [LUMI Documentation](https://docs.lumi-supercomputer.eu/)
 - [IQM Quantum Computer](https://www.meetiqm.com/)
 - [VQE Algorithm Paper](https://arxiv.org/abs/1304.3061)
-- [HIQ Documentation](https://github.com/hiq-lab/HIQ)
+- [HIQ Documentation](https://github.com/hiq-lab/arvak)
 
 ## License
 
