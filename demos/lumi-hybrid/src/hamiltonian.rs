@@ -3,7 +3,7 @@
 //! This module provides the electronic Hamiltonian for the H2 molecule
 //! in the STO-3G basis using the Jordan-Wigner transformation.
 
-use hiq_hal::result::Counts;
+use arvak_hal::result::Counts;
 
 /// H2 Hamiltonian in second quantization (Jordan-Wigner mapped)
 ///

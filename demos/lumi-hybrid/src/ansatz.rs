@@ -4,7 +4,7 @@
 //! ansatz for the H2 molecule using 2 qubits.
 
 use anyhow::Result;
-use hiq_ir::{Circuit, ClbitId, QubitId};
+use arvak_ir::{Circuit, ClbitId, QubitId};
 use std::f64::consts::PI;
 
 /// Create the UCCSD ansatz circuit for H2

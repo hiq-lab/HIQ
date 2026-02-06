@@ -16,8 +16,8 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-use hiq_hal::Backend;
-use hiq_ir::Circuit;
+use arvak_hal::Backend;
+use arvak_ir::Circuit;
 
 mod ansatz;
 mod hamiltonian;

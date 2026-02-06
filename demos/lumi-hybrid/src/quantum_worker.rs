@@ -13,9 +13,9 @@ use std::fs;
 use std::path::PathBuf;
 use tracing::info;
 
-use hiq_hal::Backend;
-use hiq_ir::Circuit;
-use hiq_qasm3::parse;
+use arvak_hal::Backend;
+use arvak_ir::Circuit;
+use arvak_qasm3::parse;
 
 /// Quantum circuit job specification
 #[derive(Debug, Clone, Serialize, Deserialize)]

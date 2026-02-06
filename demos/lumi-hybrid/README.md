@@ -26,7 +26,7 @@ This demo showcases HIQ's ability to orchestrate quantum-classical hybrid worklo
 │  └─────────────────────────────┘    └─────────────────────────────────────┘ │
 │                                                                              │
 │  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │                          HIQ Orchestration                               ││
+│  │                          Arvak Orchestration                               ││
 │  │  • SLURM job coordination    • Circuit compilation    • Result parsing  ││
 │  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -57,12 +57,12 @@ The VQE algorithm:
    export HELMI_TOKEN="your-token-from-myaccessid"
    ```
 
-### Build HIQ on LUMI
+### Build Arvak on LUMI
 
 ```bash
-# Clone HIQ
+# Clone Arvak
 git clone https://github.com/hiq-lab/arvak.git
-cd HIQ
+cd arvak
 
 # Load modules
 module load LUMI/23.09
@@ -72,7 +72,7 @@ module load Rust/1.75.0
 # Build
 cargo build --release
 
-# Set HIQ directory
+# Set Arvak directory
 export HIQ_DIR=$(pwd)
 ```
 
@@ -257,11 +257,11 @@ groups    # Check group membership
 
 ### "Circuit compilation failed"
 
-Ensure HIQ is built correctly:
+Ensure Arvak is built correctly:
 ```bash
 cd $HIQ_DIR
 cargo build --release
-cargo test -p hiq-adapter-iqm
+cargo test -p arvak-adapter-iqm
 ```
 
 ## Further Reading
@@ -269,7 +269,7 @@ cargo test -p hiq-adapter-iqm
 - [LUMI Documentation](https://docs.lumi-supercomputer.eu/)
 - [IQM Quantum Computer](https://www.meetiqm.com/)
 - [VQE Algorithm Paper](https://arxiv.org/abs/1304.3061)
-- [HIQ Documentation](https://github.com/hiq-lab/arvak)
+- [Arvak Documentation](https://github.com/hiq-lab/arvak)
 
 ## License
 
