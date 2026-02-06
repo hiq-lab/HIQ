@@ -3,7 +3,7 @@
 //! This demo showcases a quantum-classical hybrid workflow on LUMI:
 //! - Classical optimizer runs on LUMI-G (AMD GPUs) or LUMI-C (CPUs)
 //! - Quantum circuit evaluation runs on LUMI-Q (IQM quantum computer)
-//! - HIQ orchestrates the SLURM jobs for both partitions
+//! - Arvak orchestrates the SLURM jobs for both partitions
 //!
 //! The Variational Quantum Eigensolver (VQE) finds the ground state energy
 //! of the H2 molecule at various bond distances.
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
     info!("╠══════════════════════════════════════════════════════════════╣");
     info!("║  Classical compute: LUMI-G (AMD MI250X) / LUMI-C (AMD EPYC) ║");
     info!("║  Quantum compute:   LUMI-Q (IQM 20-qubit)                   ║");
-    info!("║  Orchestration:     HIQ + SLURM                             ║");
+    info!("║  Orchestration:     Arvak + SLURM                             ║");
     info!("╚══════════════════════════════════════════════════════════════╝");
     info!("");
 
