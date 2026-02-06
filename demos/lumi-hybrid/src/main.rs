@@ -309,7 +309,7 @@ async fn evaluate_energy(
         "sim-shots" => {
             // Use simulator with shot-based measurement (noisy)
             let circuit = create_uccsd_ansatz(parameters)?;
-            let backend = hiq_adapter_sim::SimulatorBackend::new();
+            let backend = arvak_adapter_sim::SimulatorBackend::new();
             evaluate_with_backend(&backend, &circuit, hamiltonian, _shots).await
         }
         "iqm" | "lumi" => {
