@@ -73,7 +73,7 @@ module load Rust/1.75.0
 cargo build --release
 
 # Set Arvak directory
-export HIQ_DIR=$(pwd)
+export ARVAK_DIR=$(pwd)
 ```
 
 ## Quick Start
@@ -259,7 +259,7 @@ groups    # Check group membership
 
 Ensure Arvak is built correctly:
 ```bash
-cd $HIQ_DIR
+cd $ARVAK_DIR
 cargo build --release
 cargo test -p arvak-adapter-iqm
 ```

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hiq_vqe_quantum
+#SBATCH --job-name=arvak_vqe_quantum
 #SBATCH --account=project_462000xxx
 #SBATCH --partition=q_fiqci
 #SBATCH --time=00:30:00
@@ -11,7 +11,7 @@
 
 # ╔════════════════════════════════════════════════════════════════════════════╗
 # ║  LUMI-Q Quantum Job Script                                                  ║
-# ║  Executes quantum circuits on IQM quantum computer via HIQ                  ║
+# ║  Executes quantum circuits on IQM quantum computer via Arvak                  ║
 # ╚════════════════════════════════════════════════════════════════════════════╝
 #
 # This script runs on the LUMI quantum partition (q_fiqci) and executes
@@ -22,10 +22,10 @@
 #
 # Environment:
 #   - HELMI_TOKEN or IQM_TOKEN must be set for authentication
-#   - HIQ_DIR: Path to HIQ installation (default: $HOME/hiq)
+#   - ARVAK_DIR: Path to Arvak installation (default: $HOME/arvak)
 
 echo "╔════════════════════════════════════════════════════════════════════════════╗"
-echo "║  LUMI-Q HIQ Quantum Worker                                                  ║"
+echo "║  LUMI-Q Arvak Quantum Worker                                                  ║"
 echo "╠════════════════════════════════════════════════════════════════════════════╣"
 echo "║  Job ID: $SLURM_JOB_ID"
 echo "║  Node:   $SLURMD_NODENAME"
@@ -37,7 +37,7 @@ module load LUMI/23.09
 module load cray-python/3.10.10
 
 # Set paths
-HIQ_DIR="${HIQ_DIR:-$HOME/hiq}"
+ARVAK_DIR="${ARVAK_DIR:-$HOME/arvak}"
 WORK_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 
 # Input/output files
@@ -53,7 +53,7 @@ fi
 
 echo ""
 echo "Configuration:"
-echo "  HIQ_DIR:     $HIQ_DIR"
+echo "  ARVAK_DIR:     $ARVAK_DIR"
 echo "  JOB_FILE:    $JOB_FILE"
 echo "  OUTPUT_FILE: $OUTPUT_FILE"
 echo ""
@@ -68,7 +68,7 @@ fi
 echo "Starting quantum worker..."
 cd "$WORK_DIR"
 
-"$HIQ_DIR/target/release/quantum_worker" \
+"$ARVAK_DIR/target/release/quantum_worker" \
     --job "$JOB_FILE" \
     --output "$OUTPUT_FILE" \
     --verbose

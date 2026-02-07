@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hiq_vqe_classical
+#SBATCH --job-name=arvak_vqe_classical
 #SBATCH --account=project_462000xxx
 #SBATCH --partition=small-g
 #SBATCH --time=01:00:00
@@ -26,7 +26,7 @@
 # For CPU-only execution, use partition=small instead of small-g
 
 echo "╔════════════════════════════════════════════════════════════════════════════╗"
-echo "║  LUMI-G HIQ Classical Optimizer                                             ║"
+echo "║  LUMI-G Arvak Classical Optimizer                                             ║"
 echo "╠════════════════════════════════════════════════════════════════════════════╣"
 echo "║  Job ID: $SLURM_JOB_ID"
 echo "║  Node:   $SLURMD_NODENAME"
@@ -40,7 +40,7 @@ module load cray-python/3.10.10
 module load rocm/5.6.1
 
 # Set paths
-HIQ_DIR="${HIQ_DIR:-$HOME/hiq}"
+ARVAK_DIR="${ARVAK_DIR:-$HOME/arvak}"
 WORK_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 
 # Configuration
@@ -49,7 +49,7 @@ RESULTS_DIR="${RESULTS_DIR:-$WORK_DIR/results}"
 
 echo ""
 echo "Configuration:"
-echo "  HIQ_DIR:     $HIQ_DIR"
+echo "  ARVAK_DIR:     $ARVAK_DIR"
 echo "  CONFIG_FILE: $CONFIG_FILE"
 echo "  RESULTS_DIR: $RESULTS_DIR"
 echo ""
@@ -70,7 +70,7 @@ if [[ "$HYBRID_MODE" == "true" ]]; then
     echo ""
 
     # Run the VQE coordinator
-    "$HIQ_DIR/target/release/lumi_vqe" \
+    "$ARVAK_DIR/target/release/lumi_vqe" \
         --backend lumi \
         --max-iterations "${MAX_ITERATIONS:-50}" \
         --shots "${SHOTS:-1000}" \
@@ -83,7 +83,7 @@ else
     echo ""
 
     # Run VQE with local simulator
-    "$HIQ_DIR/target/release/lumi_vqe" \
+    "$ARVAK_DIR/target/release/lumi_vqe" \
         --backend sim \
         --max-iterations "${MAX_ITERATIONS:-50}" \
         --shots "${SHOTS:-1000}" \

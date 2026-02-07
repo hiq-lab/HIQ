@@ -15,7 +15,7 @@
 #
 # Prerequisites:
 #   - LUMI account with access to q_fiqci (quantum) and small-g (GPU) partitions
-#   - HIQ compiled and installed in $HOME/hiq
+#   - Arvak compiled and installed in $HOME/arvak
 #   - HELMI_TOKEN environment variable set
 
 set -e
@@ -29,7 +29,7 @@ BOND_DISTANCE="${BOND_DISTANCE:-0.735}"
 MAX_ITERATIONS="${MAX_ITERATIONS:-50}"
 SHOTS="${SHOTS:-1000}"
 ACCOUNT="${ACCOUNT:-project_462000xxx}"
-HIQ_DIR="${HIQ_DIR:-$HOME/hiq}"
+ARVAK_DIR="${ARVAK_DIR:-$HOME/arvak}"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -162,10 +162,10 @@ if [[ "$USE_SIMULATOR" == "false" ]]; then
         --time=01:00:00 \
         --nodes=1 \
         --gpus-per-node=1 \
-        --export=ALL,HIQ_DIR="$HIQ_DIR",HYBRID_MODE=true,MAX_ITERATIONS="$MAX_ITERATIONS",SHOTS="$SHOTS",RESULTS_DIR="$(pwd)/results" \
+        --export=ALL,ARVAK_DIR="$ARVAK_DIR",HYBRID_MODE=true,MAX_ITERATIONS="$MAX_ITERATIONS",SHOTS="$SHOTS",RESULTS_DIR="$(pwd)/results" \
         --output=classical_%j.out \
         --error=classical_%j.err \
-        "$HIQ_DIR/demos/lumi-hybrid/slurm/classical_job.sh" \
+        "$ARVAK_DIR/demos/lumi-hybrid/slurm/classical_job.sh" \
         | awk '{print $4}')
 
     echo "Submitted classical coordinator: Job ID $CLASSICAL_JOB"
@@ -182,10 +182,10 @@ else
         --time=00:30:00 \
         --nodes=1 \
         --cpus-per-task=8 \
-        --export=ALL,HIQ_DIR="$HIQ_DIR",HYBRID_MODE=false,MAX_ITERATIONS="$MAX_ITERATIONS",SHOTS="$SHOTS",RESULTS_DIR="$(pwd)/results" \
+        --export=ALL,ARVAK_DIR="$ARVAK_DIR",HYBRID_MODE=false,MAX_ITERATIONS="$MAX_ITERATIONS",SHOTS="$SHOTS",RESULTS_DIR="$(pwd)/results" \
         --output=classical_%j.out \
         --error=classical_%j.err \
-        "$HIQ_DIR/demos/lumi-hybrid/slurm/classical_job.sh" \
+        "$ARVAK_DIR/demos/lumi-hybrid/slurm/classical_job.sh" \
         | awk '{print $4}')
 
     echo "Submitted simulator job: Job ID $CLASSICAL_JOB"
