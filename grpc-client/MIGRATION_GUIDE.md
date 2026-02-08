@@ -408,6 +408,6 @@ Complete examples available in `grpc-client/arvak_grpc/examples/`:
 
 ---
 
-**Phase 2 Version:** 1.2.0
+**Phase 2 Version:** 1.4.0
 **Backward Compatible:** Yes ✅
 **Migration Required:** No ✅

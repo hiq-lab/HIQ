@@ -407,6 +407,6 @@ See the main [Arvak repository](https://github.com/hiq-lab/arvak) for contributi
 
 ---
 
-**Version:** 1.2.0
+**Version:** 1.4.0
 **Phase:** 2 (Advanced Features)
 **Python:** 3.9+
